@@ -6,6 +6,8 @@
 <title>Погода Мира</title>
 <link rel="icon" href="data:,">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
 :root{--fg:#fff;--muted:rgba(255,255,255,.72);--glass:rgba(255,255,255,.14);--glass-b:rgba(255,255,255,.25);--accent:#ffd36b;
 --bg1:#3a7bd5;--bg2:#00d2ff;--r:22px}
@@ -88,6 +90,13 @@ h3{margin:0 0 10px;font-size:13px;font-weight:600;text-transform:uppercase;lette
 @keyframes flash{0%,88%,100%{opacity:0}90%,94%{opacity:1}}
 .pulse{animation:pulse 3s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.6}}
+.osm{filter:saturate(.6) brightness(.85)}
+#map{height:calc(100vh - 330px);min-height:300px;border-radius:var(--r);overflow:hidden;border:1px solid var(--glass-b)}
+.mapbar{display:flex;align-items:center;gap:10px;margin-top:10px}.mapbar input{flex:1;accent-color:var(--accent)}
+.mapt{font-size:13px;color:var(--muted);text-align:center;margin-top:6px}
+.legend{display:flex;height:8px;border-radius:4px;margin-top:8px;background:linear-gradient(90deg,#9be1ff,#0482ff,#00a000,#ffee00,#ff8c00,#ff0000,#c800c8)}
+.legl{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:3px}
+.leaflet-container{background:#1b2735}
 </style>
 </head>
 <body>
@@ -109,11 +118,21 @@ h3{margin:0 0 10px;font-size:13px;font-weight:600;text-transform:uppercase;lette
   <div class="view" id="v-compare">
     <div class="card"><h3>Сравнение избранных</h3><div id="cmpList"></div></div>
   </div>
+  <div class="view" id="v-map">
+    <div class="card"><h3>Карта осадков <small id="mapCity" style="color:var(--muted);font-weight:400"></small></h3>
+      <div id="map"></div>
+      <div class="mapbar"><button class="btn" id="mapPlay">⏸</button><input type="range" id="mapRange" min="0" max="0" value="0"></div>
+      <div class="mapt" id="mapTime">Загрузка радара…</div>
+      <div class="legend"></div><div class="legl"><span>слабый</span><span>умеренный</span><span>сильный</span><span>ливень/град</span></div>
+      <div class="mapt">Радар: RainViewer · Карта: © OpenStreetMap</div>
+    </div>
+  </div>
 </div>
 <div class="nav">
   <button class="btn on" data-v="weather">🌤 Погода</button>
   <button class="btn" data-v="cities">🗺 Города</button>
   <button class="btn" data-v="compare">⚖️ Сравнить</button>
+  <button class="btn" data-v="map">🌧 Карта</button>
 </div>
 
 <script>
@@ -336,10 +355,11 @@ function renderCompare(){
 /* ---------- views / telegram buttons ---------- */
 function showView(v){
   state.view=v;
-  ["weather","cities","compare"].forEach(function(x){ $("v-"+x).classList.toggle("on",x===v); });
+  ["weather","cities","compare","map"].forEach(function(x){ $("v-"+x).classList.toggle("on",x===v); });
   Array.prototype.forEach.call(document.querySelectorAll(".nav .btn"),function(b){ b.classList.toggle("on",b.dataset.v===v); });
   if (v==="compare") renderCompare();
   if (v==="cities") renderCities();
+  if (v==="map") openMap();
   if (tg && tg.BackButton){ try{ v==="weather"?tg.BackButton.hide():tg.BackButton.show(); }catch(e){} }
   updateMainButton();
 }
@@ -358,6 +378,50 @@ if (tg){
   }catch(e){}
 }
 Array.prototype.forEach.call(document.querySelectorAll(".nav .btn"),function(b){ b.onclick=function(){ haptic("sel"); showView(b.dataset.v); }; });
+
+
+/* ---------- radar map ---------- */
+var R={map:null,frames:[],layers:{},idx:0,timer:null,host:"",marker:null,playing:true,loaded:0};
+function mskTime(t){ return new Date(t*1000).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",timeZone:"Europe/Moscow"}); }
+function placeLL(){ var p=state.place; if(p&&p.lat!=null) return [p.lat,p.lon]; if(p&&p.latitude!=null) return [p.latitude,p.longitude]; return [55.75,37.62]; }
+function openMap(){
+  if(!window.L){ $("mapTime").textContent="Не удалось загрузить карту"; return; }
+  var ll=placeLL();
+  $("mapCity").textContent=state.place&&state.place.name?"· "+state.place.name:"";
+  if(!R.map){
+    R.map=L.map("map",{zoomControl:true,attributionControl:false,maxZoom:10,minZoom:2}).setView(ll,5);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:10,className:"osm"}).addTo(R.map);
+    $("mapPlay").onclick=function(){ haptic("sel"); R.playing?stopAnim():startAnim(); };
+    $("mapRange").oninput=function(){ stopAnim(); showFrame(+this.value); };
+    fetchRadar(); setInterval(fetchRadar,10*60*1000);
+  } else R.map.setView(ll,R.map.getZoom()<5?6:R.map.getZoom());
+  if(R.marker) R.marker.setLatLng(ll); else R.marker=L.circleMarker(ll,{radius:7,color:"#fff",weight:2,fillColor:"#ffd36b",fillOpacity:1}).addTo(R.map);
+  setTimeout(function(){ R.map.invalidateSize(); },60);
+  if(R.frames.length&&R.playing) startAnim();
+}
+function fetchRadar(){
+  fetch("https://api.rainviewer.com/public/weather-maps.json").then(function(r){return r.json();}).then(function(d){
+    R.host=d.host; var old=R.layers; R.layers={};
+    for(var k in old) R.map.removeLayer(old[k]);
+    R.frames=(d.radar.past||[]).map(function(f){f.nc=false;return f;}).concat((d.radar.nowcast||[]).map(function(f){f.nc=true;return f;}));
+    $("mapRange").max=R.frames.length-1;
+    var last=(d.radar.past||[]).length-1; showFrame(Math.max(last,0)); if(R.playing) startAnim();
+  }).catch(function(){ $("mapTime").textContent="Радар временно недоступен"; });
+}
+function layerFor(i){
+  var f=R.frames[i]; if(!R.layers[f.path]){
+    R.layers[f.path]=L.tileLayer(R.host+f.path+"/256/{z}/{x}/{y}/2/1_1.png",{opacity:0,maxNativeZoom:7,maxZoom:10,zIndex:5}).addTo(R.map);
+  } return R.layers[f.path];
+}
+function showFrame(i){
+  if(!R.frames.length) return; i=(i+R.frames.length)%R.frames.length;
+  layerFor((i+1)%R.frames.length);
+  var cur=layerFor(i); for(var k in R.layers) R.layers[k].setOpacity(R.layers[k]===cur?0.75:0);
+  R.idx=i; $("mapRange").value=i; var f=R.frames[i];
+  $("mapTime").textContent=mskTime(f.time)+" МСК · "+(f.nc?"прогноз":"наблюдение");
+}
+function startAnim(){ stopAnim(); R.playing=true; $("mapPlay").textContent="⏸"; R.timer=setInterval(function(){ if(state.view==="map") showFrame(R.idx+1); },700); }
+function stopAnim(){ if(R.timer) clearInterval(R.timer); R.timer=null; R.playing=false; $("mapPlay").textContent="▶️"; }
 
 /* ---------- cities ---------- */
 function renderCities(){
