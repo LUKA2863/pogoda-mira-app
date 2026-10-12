@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Погода Мира</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:var(--tg-theme-bg-color,#fff);--tx:var(--tg-theme-text-color,#111);--hint:var(--tg-theme-hint-color,#888);
+--btn:var(--tg-theme-button-color,#2a8bf2);--btx:var(--tg-theme-button-text-color,#fff);--sec:var(--tg-theme-secondary-bg-color,#f1f3f5)}
+*{box-sizing:border-box}body{margin:0;padding:12px;background:var(--bg);color:var(--tx);font:15px -apple-system,system-ui,Roboto,sans-serif}
+h1{font-size:20px;margin:4px 0 12px}
+.search{display:flex;gap:8px;margin-bottom:12px}
+.search input{flex:1;padding:10px 12px;border-radius:10px;border:1px solid var(--sec);background:var(--sec);color:var(--tx);font-size:15px}
+button{border:0;border-radius:10px;padding:10px 12px;font-size:14px;cursor:pointer}
+.go{background:var(--btn);color:var(--btx)}
+.tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:10px}
+.tab{background:var(--sec);color:var(--tx);white-space:nowrap}.tab.on{background:var(--btn);color:var(--btx)}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.city{background:var(--sec);color:var(--tx);padding:9px 4px;font-size:13px}
+.card{background:var(--sec);border-radius:14px;padding:14px;margin-bottom:12px;display:none}
+.big{font-size:42px;font-weight:600}.hint{color:var(--hint);font-size:13px}
+.row{display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid rgba(128,128,128,.15)}
+</style></head><body>
+<h1>🌍 Погода Мира</h1>
+<div class="search"><input id="q" placeholder="Любой город, например Казань"><button class="go" id="go">Найти</button></div>
+<div class="card" id="card"></div>
+<div class="tabs" id="tabs"></div>
+<div class="grid" id="grid"></div>
+<p class="hint">Данные: Open-Meteo</p>
+<script>
+const tg=window.Telegram&&Telegram.WebApp; if(tg){tg.ready();tg.expand();}
+const EMO={"Россия":"🇷🇺","Европа":"🇪🇺","Азия":"🌏","Америка":"🌎","Африка":"🌍","Океания":"🏝"};
+const W={0:"☀️ Ясно",1:"🌤 Преимущественно ясно",2:"⛅ Переменная облачность",3:"☁️ Пасмурно",45:"🌫 Туман",48:"🌫 Изморозь, туман",51:"🌦 Слабая морось",53:"🌦 Морось",55:"🌧 Сильная морось",56:"🌧 Ледяная морось",57:"🌧 Ледяная морось",61:"🌧 Небольшой дождь",63:"🌧 Дождь",65:"🌧 Сильный дождь",66:"🌧 Ледяной дождь",67:"🌧 Ледяной дождь",71:"🌨 Небольшой снег",73:"🌨 Снег",75:"❄️ Сильный снег",77:"🌨 Снежные зёрна",80:"🌦 Небольшой ливень",81:"🌧 Ливень",82:"⛈ Сильный ливень",85:"🌨 Снегопад",86:"❄️ Сильный снегопад",95:"⛈ Гроза",96:"⛈ Гроза с градом",99:"⛈ Гроза с градом"};
+const w=c=>W[c]||"🌡 —", s=n=>(n>0?"+":"")+Math.round(n);
+const DAYS=["Вс","Пн","Вт","Ср","Чт","Пт","Сб"];
+let CITIES={}, cur;
+const $=id=>document.getElementById(id);
+function tabs(){ $("tabs").innerHTML=""; for(const r in CITIES){const b=document.createElement("button");b.className="tab"+(r===cur?" on":"");b.textContent=EMO[r]+" "+r;b.onclick=()=>{cur=r;tabs();grid()};$("tabs").append(b);} }
+function grid(){ $("grid").innerHTML=""; for(const [c,cc] of CITIES[cur]){const b=document.createElement("button");b.className="city";b.textContent=c;b.onclick=()=>show(c,cc);$("grid").append(b);} }
+async function show(name,cc){
+  const card=$("card"); card.style.display="block"; card.innerHTML='<span class="hint">Загрузка…</span>'; window.scrollTo({top:0,behavior:"smooth"});
+  try{
+    const g=await (await fetch("https://geocoding-api.open-meteo.com/v1/search?count=10&language=ru&format=json&name="+encodeURIComponent(name))).json();
+    const rs=g.results||[]; const p=(cc&&rs.find(x=>x.country_code===cc))||rs[0];
+    if(!p){card.innerHTML="😕 Не нашёл город «"+name.replace(/</g,"")+"»";return;}
+    const u=`https://api.open-meteo.com/v1/forecast?latitude=${p.latitude}&longitude=${p.longitude}&current=temperature_2m,apparent_temperature,wind_speed_10m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=5&timezone=auto&wind_speed_unit=ms`;
+    const d=await (await fetch(u)).json(), c=d.current, dl=d.daily;
+    let h=`<div><b>📍 ${p.name}${p.country?", "+p.country:""}</b></div><div class="big">${s(c.temperature_2m)}°C</div>
+<div>${w(c.weather_code)}</div><div class="hint">Ощущается как ${s(c.apparent_temperature)}°C · 💨 ${Math.round(c.wind_speed_10m)} м/с</div><div style="margin-top:10px"><b>📅 Прогноз на 5 дней</b></div>`;
+    dl.time.forEach((t,i)=>{const dt=new Date(t+"T12:00");h+=`<div class="row"><span>${DAYS[dt.getDay()]} ${t.slice(8)}.${t.slice(5,7)}</span><span>${w(dl.weather_code[i])}</span><span>${s(dl.temperature_2m_min[i])}…${s(dl.temperature_2m_max[i])}°</span></div>`});
+    card.innerHTML=h; tg&&tg.HapticFeedback&&tg.HapticFeedback.impactOccurred("light");
+  }catch(e){card.innerHTML="⚠️ Не удалось получить погоду. Попробуйте позже.";}
+}
+$("go").onclick=()=>{const v=$("q").value.trim(); if(v) show(v)};
+$("q").addEventListener("keydown",e=>{if(e.key==="Enter")$("go").click()});
+fetch("cities.json").then(r=>r.json()).then(j=>{CITIES=j;cur=Object.keys(j)[0];tabs();grid();});
+</script></body></html>
